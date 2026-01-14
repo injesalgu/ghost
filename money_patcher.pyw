@@ -12,6 +12,8 @@ import mss
 import pyautogui
 import subprocess
 import threading
+import shutil
+import shutil
 
 def search_and_click_image(image_filename, threshold=0.8):
     """
@@ -275,6 +277,17 @@ class MoneyPatcher:
             command=self.toggle_mgame
         )
         self.mgame_checkbox.pack(side='left', padx=6)
+        
+        # 다운로드 체크박스
+        self.download_var = tk.BooleanVar(value=False)
+        self.download_checkbox = tk.Checkbutton(
+            checkbox_frame,
+            text="다운로드",
+            font=("Arial", 7),
+            variable=self.download_var,
+            command=self.download_from_github
+        )
+        self.download_checkbox.pack(side='left', padx=6)
         
         # 텍스트 입력 프레임
         input_frame = tk.Frame(main_frame)
@@ -580,6 +593,84 @@ class MoneyPatcher:
         if self.mgame_var.get():
             self.hangame_var.set(False)
             self.log("엠게임 선택")
+    
+    def download_from_github(self):
+        """GitHub에서 파일 다운로드"""
+        if self.download_var.get():
+            try:
+                self.log("GitHub에서 파일 다운로드 중...")
+                download_path = os.path.join(os.path.expanduser('~'), 'Desktop', 'newmacro')
+                
+                # git이 설치되어 있는지 확인
+                try:
+                    subprocess.run(['git', '--version'], capture_output=True, check=True)
+                except:
+                    self.log("Git이 설치되어 있지 않습니다.")
+                    self.download_var.set(False)
+                    return
+                
+                # 임시 폴더를 TEMP 디렉토리에 생성 (권한 문제 방지)
+                import tempfile
+                temp_dir = tempfile.gettempdir()
+                temp_path = os.path.join(temp_dir, 'temp_ghost_download')
+                
+                # 기존 임시 폴더가 있으면 삭제
+                if os.path.exists(temp_path):
+                    try:
+                        shutil.rmtree(temp_path, ignore_errors=True)
+                        time.sleep(0.5)
+                    except Exception as e:
+                        self.log(f"기존 임시 폴더 삭제 실패: {str(e)}")
+                
+                # git clone 실행
+                self.log(f"저장소 클론 중...")
+                result = subprocess.run(
+                    ['git', 'clone', 'https://github.com/injesalgu/ghost.git', temp_path],
+                    capture_output=True,
+                    text=True
+                )
+                
+                if result.returncode == 0:
+                    self.log("파일 복사 중...")
+                    # 파일 복사 (temp_ghost 내부의 파일들을 newmacro로 이동)
+                    for item in os.listdir(temp_path):
+                        if item == '.git':
+                            continue
+                        src = os.path.join(temp_path, item)
+                        dst = os.path.join(download_path, item)
+                        
+                        try:
+                            if os.path.isdir(src):
+                                if os.path.exists(dst):
+                                    shutil.rmtree(dst, ignore_errors=True)
+                                    time.sleep(0.2)
+                                shutil.copytree(src, dst)
+                            else:
+                                # 파일이 사용 중일 수 있으므로 무시
+                                if os.path.exists(dst):
+                                    try:
+                                        os.remove(dst)
+                                    except:
+                                        pass
+                                shutil.copy2(src, dst)
+                            self.log(f"복사 완료: {item}")
+                        except PermissionError:
+                            self.log(f"권한 오류 (건너뜀): {item}")
+                        except Exception as e:
+                            self.log(f"복사 실패 (건너뜀): {item} - {str(e)}")
+                    
+                    # 임시 폴더 삭제
+                    try:
+                        shutil.rmtree(temp_path, ignore_errors=True)
+                    except:
+                        pass
+                    self.log("다운로드 완료!")
+                else:
+                    self.log(f"다운로드 실패: {result.stderr}")
+            except Exception as e:
+                self.log(f"다운로드 중 오류: {str(e)}")
+            finally:
+                self.download_var.set(False)
     
     def start_hangame(self):
         """한게임 접속 프로세스"""
@@ -1163,6 +1254,29 @@ class MoneyPatcher:
                     self.log("hidden과 saram 둘 다 발견 - 대기 계속")
                     continue
                 
+                # hidden과 hellper가 없고 saram만 있는 경우
+                if hidden_found_count == 0 and saram_found_count > 0:
+                    # hellper 체크
+                    hellper_found = search_image_only('hellper.png', threshold=0.5)
+                    
+                    if not hellper_found:
+                        # hidden, hellper 없고 saram만 있음 - 게임 강제종료 후 로직 시작
+                        self.log("hidden, hellper 미발견 및 saram 발견 - 귀혼 프로그램 강제종료")
+                        self.kill_game_process()
+                        time.sleep(10)
+                        
+                        # 매크로 재시작
+                        self.log("매크로 로직 시작")
+                        if self.hangame_var.get():
+                            thread = threading.Thread(target=self.start_hangame)
+                            thread.daemon = True
+                            thread.start()
+                        elif self.mgame_var.get():
+                            thread = threading.Thread(target=self.start_mgame)
+                            thread.daemon = True
+                            thread.start()
+                        continue
+                
                 # 둘 중 하나라도 발견되지 않음 - 매크로 재시작
                 self.log(f"이미지 미발견 (hidden: {hidden_found_count}회, saram: {saram_found_count}회) - 매크로 재시작")
                 
@@ -1182,6 +1296,34 @@ class MoneyPatcher:
             except Exception as e:
                 self.log(f"모니터링 중 오류: {e}")
                 time.sleep(60)  # 오류 시 1분 대기 후 재시도
+    
+    def kill_game_process(self):
+        """귀혼 게임 프로세스 강제종료"""
+        try:
+            self.log("귀혼 프로세스 강제종료 시작...")
+            
+            # 귀혼 관련 프로세스 종료
+            processes = ['hon.exe', 'game.exe', 'GwihonOnline.exe', 'launcher.exe']
+            killed_any = False
+            
+            for process_name in processes:
+                result = subprocess.run(
+                    ['taskkill', '/F', '/IM', process_name],
+                    capture_output=True,
+                    text=True
+                )
+                if result.returncode == 0:
+                    self.log(f"{process_name} 종료됨")
+                    killed_any = True
+            
+            if killed_any:
+                self.log("귀혼 프로세스 강제종료 완료")
+            else:
+                self.log("종료할 귀혼 프로세스를 찾을 수 없음")
+            
+            time.sleep(1)
+        except Exception as e:
+            self.log(f"프로세스 종료 중 오류: {str(e)}")
     
     def restart_game_process(self):
         """게임 강제종료 및 start.bat 실행"""
